@@ -1,0 +1,10 @@
+﻿{
+  "package_role": "pipeline_ready_derived_dataset",
+  "primary_dataset_path": "data/raw_plants",
+  "expected_use": "TAMC-PLANTAS reproducible pipeline execution",
+  "contains_original_embedded_zip": false,
+  "original_source_data_url": "https://figshare.com/s/65447c618656565467e6",
+  "associated_article_doi": "10.1080/15592324.2024.2310977",
+  "original_license": "CC BY 4.0",
+  "reason_for_derivative_package": "stable Zenodo-hosted package suitable for automated reproducibility checks, independent pipeline execution and audit-oriented verification workflows"
+}

@@ -1,0 +1,37 @@
+﻿cff-version: 1.2.0
+title: "TAMC-PLANTAS derived dataset: reorganized plant electrophysiology recordings for reproducible multiband bioelectrical analysis"
+message: "If you use this derived dataset, please cite both this Zenodo record and the original Madariaga et al. (2024) article/source data."
+type: dataset
+authors:
+  - family-names: "Martinez-Sanchez"
+    given-names: "F. J."
+year: 2026
+license: CC-BY-4.0
+references:
+  - type: article
+    title: "A library of electrophysiological responses in plants – A model of transversal education and open science"
+    authors:
+      - family-names: "Madariaga"
+        given-names: "Danae"
+      - family-names: "Arro"
+        given-names: "Derek"
+      - family-names: "Irarrázaval"
+        given-names: "Catalina"
+      - family-names: "Soto"
+        given-names: "Alejandro"
+      - family-names: "Guerra"
+        given-names: "Felipe"
+      - family-names: "Romero"
+        given-names: "Angélica"
+      - family-names: "Ovalle"
+        given-names: "Fabián"
+      - family-names: "Fedrigolli"
+        given-names: "Elsa"
+      - family-names: "DesRosiers"
+        given-names: "Thomas"
+      - family-names: "Serbe-Kamp"
+        given-names: "Étienne"
+      - family-names: "Marzullo"
+        given-names: "Timothy"
+    year: 2024
+    doi: "10.1080/15592324.2024.2310977"
