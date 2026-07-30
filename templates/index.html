@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Bio-Digital Twin</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
+    <style>
+        body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0d1117; color: #c9d1d9; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        
+        /* Top Navigation Bar */
+        #top-bar { display: flex; justify-content: space-between; align-items: center; background-color: #161b22; padding: 10px 20px; border-bottom: 1px solid #30363d; height: 40px; }
+        .logo { font-size: 16px; font-weight: bold; color: #4CAF50; display: flex; align-items: center; gap: 8px; }
+        .controls { display: flex; gap: 15px; align-items: center; }
+        .upload-btn { background-color: #238636; color: white; padding: 6px 15px; border: 1px solid rgba(240,246,252,0.1); border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: bold; }
+        .upload-btn:hover { background-color: #2ea043; }
+        input[type="file"] { font-size: 12px; color: #8b949e; }
+
+        /* Main Workspace Split */
+        #workspace { display: flex; flex-direction: row; flex-grow: 1; height: calc(100vh - 100px); }
+        #waveformChart { touch-action: none; cursor: grab; }
+        #waveformChart:active { cursor: grabbing; }
+        
+        /* Left Panel: Chart */
+        #chart-panel { width: 50%; display: flex; flex-direction: column; padding: 15px; position: relative; min-width: 20%; }
+        #divider { width: 5px; background-color: #30363d; cursor: col-resize; transition: background 0.2s; z-index: 50; }
+        #divider:hover, #divider:active { background-color: #58a6ff; }
+        .panel-title { font-size: 11px; letter-spacing: 1.5px; color: #8b949e; margin-bottom: 10px; }
+        .chart-wrapper { flex-grow: 1; position: relative; }
+        
+        /* Right Panel: 3D Twin */
+        #twin-panel { flex: 1; position: relative; background: radial-gradient(circle at center, #1f242c 0%, #0d1117 100%); min-width: 20%; }
+        #canvas-container { width: 100%; height: 100%; }
+        
+        /* Bottom Status Bar */
+        #status-bar { height: 40px; background-color: #161b22; border-top: 1px solid #30363d; display: flex; align-items: center; padding: 0 20px; font-family: monospace; font-size: 12px; color: #8b949e; justify-content: space-between; }
+        .alert-active { color: #ff7b72; font-weight: bold; }
+        .alert-safe { color: #3fb950; font-weight: bold; }
+
+        /* Floating Zoom Controls */
+        .zoom-controls { position: absolute; bottom: 20px; right: 20px; z-index: 10; display: flex; gap: 5px; }
+        .zoom-btn { background: rgba(22, 27, 34, 0.8); color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; width: 30px; height: 30px; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; }
+        .zoom-btn:hover { background: #30363d; }
+    </style>
+</head>
+<body>
+
+    <!-- Top Bar -->
+    <div id="top-bar">
+        <div class="logo">🌱 3D Bio-Digital Twin</div>
+        <div class="controls">
+            <input type="file" id="audioUpload" accept=".wav">
+            <button class="upload-btn" onclick="processAudio()">RUN ANALYSIS</button>
+        </div>
+    </div>
+
+    <!-- Main Workspace -->
+    <div id="workspace">
+        
+        <!-- Left: Signal Data & Explainable AI -->
+        <!-- Left: Signal Data & Explainable AI -->
+        <div id="chart-panel" style="display: flex; flex-direction: column; height: 100%; box-sizing: border-box;">
+            
+            <!-- TOP 70%: Waveform Chart -->
+            <div style="flex: 7; display: flex; flex-direction: column; min-height: 0;">
+                <div class="panel-title">REAL-TIME ELECTROPHYSIOLOGICAL DATA STREAM (µV)</div>
+                <div class="chart-wrapper" style="flex: 1; position: relative; min-height: 0;">
+                    <canvas id="waveformChart"></canvas>
+                </div>
+                <div style="font-size: 10px; color: #555; text-align: right; margin-top: 5px; margin-bottom: 10px;">* Use mouse wheel to zoom, click & drag to pan</div>
+            </div>
+
+            <!-- BOTTOM 30%: Explainable AI Heatmap -->
+            <div id="xai-panel" style="display: none; flex: 3; flex-direction: column; border-top: 1px solid #30363d; padding-top: 15px; min-height: 0; box-sizing: border-box;">
+                <div class="panel-title" style="color: #58a6ff; margin-bottom: 5px;">EXPLAINABLE AI: GRAD-CAM FEATURE ACTIVATION</div>
+                <div style="font-size: 10px; color: #8b949e; margin-bottom: 5px;">
+                    Frequency map for highest-stress window. Red areas indicate exact mathematical features driving the AI decision.
+                </div>
+                
+                <!-- Container for the image (uses flex to perfectly contain it) -->
+                <div style="flex: 1; min-height: 0; width: 100%; border: 1px solid #30363d; border-radius: 4px; overflow: hidden; display: flex;">
+                    <img id="heatmap-img" src="" style="width: 100%; height: 100%; object-fit: fill;">
+                </div>
+            </div>
+
+        </div>
+        <!-- THE DRAGGABLE DIVIDER -->
+        <div id="divider"></div>
+
+        <!-- Right: 3D Render -->
+        <div id="twin-panel">
+            <div class="panel-title" style="position: absolute; top: 15px; left: 15px; z-index: 10;">3D Plant Digital Twin: Phenotypic Stress Map</div>
+            
+            <div class="zoom-controls">
+                <button class="zoom-btn" onclick="zoomCamera(-2)">+</button>
+                <button class="zoom-btn" onclick="zoomCamera(2)">-</button>
+            </div>
+
+            <div id="canvas-container"></div>
+        </div>
+
+    </div>
+
+    <!-- Bottom Status Bar -->
+    <div id="status-bar">
+        <div id="time-elapsed">SYSTEM ONLINE - AWAITING DATA</div>
+        <div id="ai-prediction">IDLE</div>
+    </div>
+
+    <!-- Three.js Loaders -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+        import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- 1. SETUP 3D SCENE ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); 
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        container.appendChild(renderer.domElement);
+
+        // Lighting (adjusted to show off textures better)
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        directionalLight.position.set(10, 20, 10);
+        scene.add(directionalLight);
+
+        // Camera Controls
+        const controls = new OrbitControls(camera, renderer.domElement);
+        camera.position.z = 12;
+        
+        // Expose zoom function to the buttons
+        window.zoomCamera = (val) => { 
+            camera.position.z += val; 
+            if(camera.position.z < 2) camera.position.z = 2; 
+        };
+
+        // --- 2. LOAD 3D MODEL & TEXTURES ---
+        let plantMesh;
+        const mtlLoader = new MTLLoader();
+        
+        // 1. Tell the material loader to look in the static folder
+        mtlLoader.setPath('/static/');
+        mtlLoader.load('plant_model.mtl?v=' + Date.now(), function (materials) {
+            materials.preload();
+            
+            const objLoader = new OBJLoader();
+            objLoader.setMaterials(materials); // 2. Apply the textures to the object
+            objLoader.setPath('/static/');
+            mtlLoader.setResourcePath('/static/');
+            
+            // 3. Load the OBJ file
+            objLoader.load('plant_model.obj?v=' + Date.now(), function (object) {
+                plantMesh = object;
+                
+                plantMesh.traverse(function (child) {
+                    if (child.isMesh) {
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                        
+                        // FIX: Force transparency clipping and double-sided rendering
+                        if (child.material) {
+                            const fixMaterial = (mat) => {
+                                mat.transparent = true;
+                                mat.alphaTest = 0.5;         // This clips out the white/transparent backgrounds
+                                mat.side = THREE.DoubleSide; // This makes leaves visible from the front AND back
+                                mat.userData.originalColor = mat.color.clone();
+                            };
+                            
+                            if (Array.isArray(child.material)) {
+                                child.material.forEach(fixMaterial);
+                            } else {
+                                fixMaterial(child.material);
+                            }
+                        }
+                    }
+                });
+
+                // 4. Auto-scale and center perfectly in the viewport
+                const box = new THREE.Box3().setFromObject(plantMesh);
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scaleFactor = 9 / maxDim; // Scale to fit a size of '9'
+                plantMesh.scale.set(scaleFactor, scaleFactor, scaleFactor);
+                
+                const newCenter = new THREE.Box3().setFromObject(plantMesh).getCenter(new THREE.Vector3());
+                plantMesh.position.sub(newCenter);
+                
+                scene.add(plantMesh);
+            });
+        });
+
+        // Animation Loop
+        function animate() {
+            requestAnimationFrame(animate);
+            if (plantMesh) plantMesh.rotation.y += 0.003; // Slow spin
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // --- 3. SETUP CHART.JS (With Smooth Panning & Seconds Axis) ---
+        const ctx = document.getElementById('waveformChart').getContext('2d');
+        const waveformChart = new Chart(ctx, {
+            type: 'line',
+            data: { 
+                labels: [], 
+                datasets: [
+                    { label: 'Raw Voltage (µV)', data: [], borderColor: '#ff7b72', borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+                    { label: 'Moving Average (0.1s)', data: [], borderColor: '#58a6ff', borderWidth: 1.5, pointRadius: 0, tension: 0.4 },
+                    { label: 'Low-Pass Filter (<2Hz)', data: [], borderColor: '#e3b341', borderWidth: 1.5, pointRadius: 0, tension: 0.4 }
+                ] 
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                scales: {
+                    x: { 
+                        display: true,
+                        grid: { color: '#21262d' },
+                        ticks: { color: '#8b949e', maxTicksLimit: 10 },
+                        title: { display: true, text: 'Time (seconds)', color: '#8b949e', font: { size: 10 } }
+                    },
+                    y: { 
+                        grid: { color: '#30363d' }, 
+                        ticks: { color: '#8b949e' },
+                        title: { display: true, text: 'Voltage (µV)', color: '#8b949e', font: { size: 10 } }
+                    }
+                },
+                plugins: { 
+                    legend: { 
+                        display: true, 
+                        labels: { color: '#8b949e', boxWidth: 12 },
+                        onHover: function(event) { event.native.target.style.cursor = 'pointer'; },
+                        onLeave: function(event) { event.native.target.style.cursor = 'grab'; }
+                    },
+                    zoom: {
+                        pan: { enabled: true, mode: 'x' },
+                        zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' }
+                    },
+                    // ADD THIS NEW ANNOTATION BLOCK
+                    annotation: {
+                        annotations: {
+                            focusBox: {
+                                type: 'box',
+                                display: false, // Hidden by default until analysis runs
+                                backgroundColor: 'rgba(255, 99, 132, 0.15)', // Transparent Red
+                                borderColor: 'rgba(255, 99, 132, 0.8)',
+                                borderWidth: 1,
+                                label: {
+                                    display: true,
+                                    content: 'AI FOCUS',
+                                    color: 'rgba(255, 255, 255, 0.7)',
+                                    backgroundColor: 'rgba(255, 99, 132, 0.5)',
+                                    position: 'start'
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // --- 4. HANDLE API CALL & INFERENCE ---
+        window.processAudio = async function() {
+            const fileInput = document.getElementById('audioUpload');
+            if (!fileInput.files.length) return alert("Select a .wav file.");
+
+            const statusBar = document.getElementById('ai-prediction');
+            statusBar.innerText = "PROCESSING SIGNAL MATRICES...";
+            statusBar.className = "";
+
+            const formData = new FormData();
+            formData.append("file", fileInput.files[0]);
+
+            try {
+                // Call your Python backend
+                const response = await fetch("/predict", { method: "POST", body: formData });
+                const data = await response.json();
+                
+                // Handle backend processing errors
+                if (data.error) {
+                    statusBar.innerText = "[SYSTEM ERROR]: " + data.error;
+                    statusBar.className = "alert-active";
+                    return;
+                }
+
+                // Inject Real Scientific Data into All Channels
+                const realData = data.signal_data;
+                const movingAvgData = data.moving_average;
+                const lowPassData = data.low_pass_filter;
+
+                // CONVERT INDEX TO REAL SECONDS (10000 Hz / 100 downsample ratio = 100 Hz step = 0.01s per point)
+                const sampleRateHz = 10000;
+                const downsampleRatio = 100;
+                const secondsPerPoint = downsampleRatio / sampleRateHz; // 0.01s
+
+                waveformChart.data.labels = Array.from(
+                    { length: realData.length }, 
+                    (_, i) => (i * secondsPerPoint).toFixed(2) + 's'
+                );
+                
+                // Plot the lines
+                waveformChart.data.datasets[0].data = realData;
+                waveformChart.data.datasets[1].data = movingAvgData;
+                waveformChart.data.datasets[2].data = lowPassData;
+
+                // --- CONSOLIDATED UI UPDATE LOGIC ---
+                
+                // 1. DEFINE THE BOX VARIABLE FIRST to prevent crashes
+                const box = waveformChart.options.plugins.annotation.annotations.focusBox;
+
+                // 2. Update UI based on AI prediction
+                if (data.overall_status === "Healthy") {
+                    // Note: Ensure your HTML has an element with id="status-text" or change this back to 'ai-prediction'
+                    const statusTextEl = document.getElementById('status-text') || document.getElementById('ai-prediction');
+                    statusTextEl.innerHTML = `[AI PREDICTION: <span style="color: #3fb950; font-weight: bold;">HEALTHY</span> - ${(100 - (data.stress_ratio * 100)).toFixed(1)}% CONFIDENCE] - NO ALERTS TRIGGERED`;
+                
+                    // Turn raw voltage line green
+                    waveformChart.data.datasets[0].borderColor = '#3fb950';
+                    
+                    // Restore healthy textures on 3D Plant
+                    if (typeof plantMesh !== 'undefined' && plantMesh) {
+                        plantMesh.traverse(child => {
+                            if (child.isMesh) {
+                                let mats = Array.isArray(child.material) ? child.material : [child.material];
+                                mats.forEach(mat => {
+                                    if (mat.userData.originalColor) mat.color.copy(mat.userData.originalColor);
+                                });
+                            }
+                        });
+                    }
+
+                    // Show XAI in "Baseline Rhythm" (Green) Mode
+                    if (data.xai_heatmap) {
+                        document.getElementById('xai-panel').style.display = 'flex';
+                        document.getElementById('heatmap-img').src = 'data:image/png;base64,' + data.xai_heatmap;
+                        
+                        if (box) {
+                            box.display = true;
+                            box.xMin = data.worst_start_sec.toFixed(2) + 's';
+                            box.xMax = data.worst_end_sec.toFixed(2) + 's';
+                            box.backgroundColor = 'rgba(63, 185, 80, 0.15)'; // Transparent Green
+                            box.borderColor = 'rgba(63, 185, 80, 0.8)';
+                            box.label.content = 'BASELINE RHYTHM';
+                            box.label.backgroundColor = 'rgba(63, 185, 80, 0.8)';
+                        }
+                    } else {
+                        if (box) box.display = false;
+                    }
+
+                } else {
+                    // --- STRESSED LOGIC ---
+                    const statusTextEl = document.getElementById('status-text') || document.getElementById('ai-prediction');
+                    statusTextEl.innerHTML = `[AI PREDICTION: <span class="alert-active" style="color: #f85149; font-weight: bold;">STRESS DETECTED</span> - ${(data.stress_ratio * 100).toFixed(1)}% CONFIDENCE] - ALERT TRIGGERED`;
+                    
+                    // Turn raw voltage line red
+                    waveformChart.data.datasets[0].borderColor = '#ff7b72'; 
+                    
+                    // Apply phenotypic stress map (wilt the leaves)
+                    if (typeof plantMesh !== 'undefined' && plantMesh) {
+                        plantMesh.traverse(child => {
+                            if (child.isMesh) {
+                                let mats = Array.isArray(child.material) ? child.material : [child.material];
+                                mats.forEach(mat => {
+                                    if (mat.alphaTest > 0) {
+                                        mat.color.setHex(0xffaa00); 
+                                    }
+                                });
+                            }
+                        });
+                    }
+
+                    // Show XAI in "AI Focus" (Red) Alarm Mode
+                    if (data.xai_heatmap) {
+                        document.getElementById('xai-panel').style.display = 'flex';
+                        document.getElementById('heatmap-img').src = 'data:image/png;base64,' + data.xai_heatmap;
+                        
+                        if (box) {
+                            box.display = true;
+                            box.xMin = data.worst_start_sec.toFixed(2) + 's';
+                            box.xMax = data.worst_end_sec.toFixed(2) + 's';
+                            box.backgroundColor = 'rgba(255, 99, 132, 0.15)'; // Transparent Red
+                            box.borderColor = 'rgba(255, 99, 132, 0.8)';
+                            box.label.content = 'AI FOCUS';
+                            box.label.backgroundColor = 'rgba(255, 99, 132, 0.8)';
+                        }
+                    } else {
+                        if (box) box.display = false;
+                    }
+                }
+
+                // Force chart to update its colors and redraw the new box size
+                waveformChart.update();
+                waveformChart.resize(); 
+
+            } catch (error) {
+                console.error("Javascript Error:", error); 
+                document.getElementById('ai-prediction').innerText = "[SYSTEM ERROR - Check Browser Console]";
+            }
+        };
+
+        // --- 5. DRAGGABLE DIVIDER LOGIC ---
+        const divider = document.getElementById('divider');
+        const chartPanel = document.getElementById('chart-panel');
+        let isDragging = false;
+
+        divider.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            document.body.style.cursor = 'col-resize';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            // Calculate new width based on mouse position
+            const newWidth = (e.clientX / window.innerWidth) * 100;
+            if (newWidth > 20 && newWidth < 80) { // Keep boundaries between 20% and 80%
+                chartPanel.style.width = `${newWidth}%`;
+                // Force Chart and Three.js to resize dynamically while dragging
+                waveformChart.resize();
+                camera.aspect = document.getElementById('twin-panel').clientWidth / document.getElementById('twin-panel').clientHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(document.getElementById('twin-panel').clientWidth, document.getElementById('twin-panel').clientHeight);
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            isDragging = false;
+            document.body.style.cursor = 'default';
+        });
+        
+    </script>
+</body>
+</html>

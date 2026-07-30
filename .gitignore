@@ -1,0 +1,9 @@
+# Ignore data folders and large arrays
+data/
+*.npy
+*.wav
+__pycache__/
+*.pyc
+venv/
+.env
+.DS_Store

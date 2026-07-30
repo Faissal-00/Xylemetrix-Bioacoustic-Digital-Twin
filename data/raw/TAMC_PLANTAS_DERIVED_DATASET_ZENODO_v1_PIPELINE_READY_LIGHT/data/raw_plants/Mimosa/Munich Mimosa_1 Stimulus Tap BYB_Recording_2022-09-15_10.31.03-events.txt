@@ -1,6 +1,0 @@
-# Marker IDs can be arbitrary strings.
-# Marker ID,	Time (in s)
-1,	29.8935
-_ch0_neuron0,	34.5179
-_neuron0threshhig2160,	0.0000
-_neuron0threshlow1891,	0.0000
