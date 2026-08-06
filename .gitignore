@@ -1,5 +1,9 @@
-# Ignore data folders and large arrays
+# Ignore data and models
 data/
+models/
+*.h5
+*.pth
+*.pt
 *.npy
 *.wav
 __pycache__/

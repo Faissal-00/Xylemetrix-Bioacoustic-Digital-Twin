@@ -5,11 +5,10 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 from scipy.io import wavfile
-from scipy.signal import butter, sosfiltfilt
 import torchaudio.transforms as T
 import torchvision.models as models
 import matplotlib
-matplotlib.use('Agg') # Ensure matplotlib runs headlessly without opening physical windows
+matplotlib.use('Agg') # Ensure matplotlib runs headlessly
 import matplotlib.pyplot as plt
 import io
 import base64
@@ -17,87 +16,68 @@ import torch.nn.functional as F
 
 # --- CONFIGURATION ---
 BASE_DIR = Path(__file__).resolve().parent.parent
-MODEL_PATH = BASE_DIR / "models" / "solanum_resnet18_mel.pth"
-TARGET_LENGTH = 5000
-SAMPLE_RATE = 10000
+# Ensure this points to the final locked model you just trained
+MODEL_PATH = BASE_DIR / "models" / "solanum_ultrasonic_resnet.pth" 
+TARGET_LENGTH = 1000    # 1,000 sample windows for bioacoustic pops
+SAMPLE_RATE = 500000    # 500 kHz Ultrasonic
 
-# --- 1. MODEL ARCHITECTURE ---
-class PlantPulseResNet(nn.Module):
-    def __init__(self):
-        super(PlantPulseResNet, self).__init__()
+# Class mapping based on your training folder structure
+CLASS_MAP = {
+    0: "Normal (Background)",
+    1: "Stress (Cut/Damage)",
+    2: "Stress (Dehydration)"
+}
+
+# --- 1. MODEL ARCHITECTURE (3-CLASS) ---
+class SolanumUltrasonicResNet(nn.Module):
+    def __init__(self, num_classes=3):
+        super(SolanumUltrasonicResNet, self).__init__()
         self.resnet = models.resnet18(weights=None)
         
         # Adapt for 1-channel grayscale Mel-spectrograms
         self.resnet.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
         num_ftrs = self.resnet.fc.in_features
         self.resnet.fc = nn.Sequential(
-            nn.Dropout(0.5),
-            nn.Linear(num_ftrs, 1)
+            nn.Dropout(0.4),
+            nn.Linear(num_ftrs, num_classes)
         )
 
     def forward(self, x):
         return self.resnet(x)
 
-# --- 2. SIGNAL PROCESSING ---
-def butter_bandpass_filter(data, lowcut, highcut, fs, order=4):
-    """Stable SOS bandpass filter."""
-    nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
-    sos = butter(order, [low, high], btype='band', output='sos')
-    return sosfiltfilt(sos, data)
-
-def butter_lowpass_filter(data, cutoff, fs, order=4):
-    """Stable SOS lowpass filter for underlying biological rhythms."""
-    nyq = 0.5 * fs
-    normal_cutoff = cutoff / nyq
-    sos = butter(order, normal_cutoff, btype='low', output='sos')
-    return sosfiltfilt(sos, data)
-
-# --- 3. INFERENCE ENGINE ---
+# --- 2. INFERENCE ENGINE ---
 def predict_wav(wav_path: str):
-    """Processes a raw WAV file and returns a JSON-friendly prediction summary."""
+    """Processes a raw 500kHz WAV file and returns a 3-class prediction summary."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 1. Load Model
-    model = PlantPulseResNet().to(device)
+    model = SolanumUltrasonicResNet(num_classes=3).to(device)
     if not Path(MODEL_PATH).exists():
         return {"error": f"Model not found at {MODEL_PATH}"}
     
     model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
     model.eval()
 
-    # 2. Setup Spectrogram Transformer
+    # 2. Setup Bioacoustic Spectrogram Transformer (Matches Training Exactly)
     mel_spectrogram = T.MelSpectrogram(
         sample_rate=SAMPLE_RATE,
-        n_fft=1024,
-        hop_length=128,
-        n_mels=128
+        n_fft=256,
+        hop_length=32,
+        n_mels=64
     ).to(device)
     amplitude_to_db = T.AmplitudeToDB().to(device)
 
-    # 3. Read & Process Audio
+    # 3. Read Audio
     try:
         fs, raw_data = wavfile.read(wav_path)
     except Exception as e:
         return {"error": f"Failed to read audio: {str(e)}"}
 
     if len(raw_data.shape) > 1:
-        raw_data = raw_data[:, 0]
+        raw_data = raw_data[:, 0] # Convert to mono if stereo
         
-    raw_data = raw_data.astype(np.float64)
-    
-    try:
-        filtered = butter_bandpass_filter(raw_data, 0.5, 50.0, fs=fs)
-    except ValueError as e:
-        return {"error": f"Filtering error: {str(e)}"}
-        
-    std = np.std(filtered)
-    if std == 0:
-        return {"error": "Signal is flat (std=0)."}
-    normalized = (filtered - np.mean(filtered)) / std
+    raw_data = raw_data.astype(np.float32)
 
-    # 4. Slice and Predict
     # --- GRAD-CAM HOOKS SETUP ---
     activations = None
     gradients = None
@@ -115,19 +95,19 @@ def predict_wav(wav_path: str):
     target_layer.register_forward_hook(forward_hook)
     target_layer.register_full_backward_hook(backward_hook)
 
-    # 4. Slice and Predict (Fast Mode - No Gradients)
+    # 4. Slice and Predict
     predictions = []
-    total_windows = 0
-    stressed_windows = 0
+    class_counts = {0: 0, 1: 0, 2: 0}
     
-    max_stress_prob = -1
+    max_stress_confidence = -1
     worst_window_tensor = None
     worst_window_start_idx = 0
+    worst_class_pred = 0
     
-    # Run the main loop fast and light
     with torch.no_grad():
-        for start in range(0, len(normalized) - TARGET_LENGTH + 1, TARGET_LENGTH):
-            window = normalized[start:start + TARGET_LENGTH].astype(np.float32)
+        # Iterate through the wav file in 1,000-sample chunks
+        for start in range(0, len(raw_data) - TARGET_LENGTH + 1, TARGET_LENGTH):
+            window = raw_data[start:start + TARGET_LENGTH]
             
             signal_tensor = torch.tensor(window, dtype=torch.float32).to(device)
             mel = mel_spectrogram(signal_tensor)
@@ -135,29 +115,34 @@ def predict_wav(wav_path: str):
             mel_db_input = mel_db.unsqueeze(0).unsqueeze(0) 
             
             output = model(mel_db_input)
-            prob = torch.sigmoid(output).item()
-            is_stressed = int(prob >= 0.5)
+            
+            # Apply softmax to get proper probabilities across the 3 classes
+            probs = torch.softmax(output, dim=1).squeeze()
+            confidence, pred_class_idx = torch.max(probs, dim=0)
+            
+            pred_class = pred_class_idx.item()
+            conf_val = confidence.item()
+            
+            class_counts[pred_class] += 1
             
             predictions.append({
-                "window_index": total_windows,
-                "stress_probability": round(prob, 4),
-                "prediction": "Stressed" if is_stressed else "Healthy"
+                "window_index": sum(class_counts.values()) - 1,
+                "prediction_id": pred_class,
+                "prediction_label": CLASS_MAP[pred_class],
+                "confidence": round(conf_val * 100, 2)
             })
             
-            # Keep a copy of the raw tensor for the worst stress event
-            if prob > max_stress_prob:
-                max_stress_prob = prob
+            # Track the highest confidence STRESS event (Cut or Dry) for Grad-CAM
+            if pred_class in [1, 2] and conf_val > max_stress_confidence:
+                max_stress_confidence = conf_val
                 worst_window_tensor = signal_tensor 
                 worst_window_start_idx = start
-                
-            total_windows += 1
-            if is_stressed:
-                stressed_windows += 1
+                worst_class_pred = pred_class
 
-    # --- 5. GENERATE GRAD-CAM HEATMAP (Only on the worst event) ---
+    # --- 5. GENERATE GRAD-CAM HEATMAP (On worst stress event) ---
+    # --- 5. GENERATE GRAD-CAM HEATMAP (On worst stress event) ---
     heatmap_base64 = None
     if worst_window_tensor is not None:
-        # Use a dictionary to safely hold hook data (solves the NoneType error)
         cam_data = {'activations': None, 'gradients': None}
 
         def forward_hook(module, input, output):
@@ -166,31 +151,26 @@ def predict_wav(wav_path: str):
         def backward_hook(module, grad_input, grad_output):
             cam_data['gradients'] = grad_output[0]
 
-        # Attach hooks to the ResNet
         target_layer = model.resnet.layer4[-1].conv2
         hook_f = target_layer.register_forward_hook(forward_hook)
         hook_b = target_layer.register_full_backward_hook(backward_hook)
 
-        # Run JUST the worst window with gradients enabled
         with torch.enable_grad():
             mel = mel_spectrogram(worst_window_tensor)
             mel_db = amplitude_to_db(mel)
             mel_db_input = mel_db.unsqueeze(0).unsqueeze(0)
             
-            # Save a clean 2D array for the background image
             worst_mel_db_np = mel_db.cpu().detach().numpy().squeeze() 
             
             mel_db_input.requires_grad_()
             output = model(mel_db_input)
             
             model.zero_grad()
-            output[0, 0].backward() # Run math backwards to trigger hooks
+            output[0, worst_class_pred].backward() 
 
-        # Remove hooks so they don't leak memory on the next run
         hook_f.remove()
         hook_b.remove()
 
-        # Calculate the heatmap mathematically using the safely stored data
         gradients = cam_data['gradients']
         activations = cam_data['activations']
 
@@ -199,16 +179,25 @@ def predict_wav(wav_path: str):
             for i in range(activations.shape[1]):
                 activations[:, i, :, :] *= pooled_gradients[i]
                 
-            heatmap = torch.mean(activations, dim=1).squeeze()
+            heatmap = torch.mean(activations, dim=1) # Shape: [1, H, W]
             heatmap = F.relu(heatmap) 
-            heatmap /= torch.max(heatmap) + 1e-8 # Add tiny epsilon to prevent divide-by-zero
+            if torch.max(heatmap) > 0:
+                heatmap = heatmap / (torch.max(heatmap) + 1e-8)
             
-            # Resize heatmap to fit the spectrogram perfectly
-            heatmap = heatmap.unsqueeze(0).unsqueeze(0)
-            heatmap = F.interpolate(heatmap, size=(worst_mel_db_np.shape[0], worst_mel_db_np.shape[1]), mode='bilinear', align_corners=False)
+            # Ensure 4D shape [Batch=1, Channel=1, H, W] explicitly before interpolation
+            if heatmap.dim() == 2:
+                heatmap = heatmap.unsqueeze(0).unsqueeze(0)
+            elif heatmap.dim() == 3:
+                heatmap = heatmap.unsqueeze(1)
+                
+            heatmap = F.interpolate(
+                heatmap, 
+                size=(int(worst_mel_db_np.shape[0]), int(worst_mel_db_np.shape[1])), 
+                mode='bilinear', 
+                align_corners=False
+            )
             heatmap = heatmap.squeeze().cpu().detach().numpy()
             
-            # Plot and encode to Base64
             fig, ax = plt.subplots(figsize=(6, 2))
             ax.imshow(worst_mel_db_np, aspect='auto', origin='lower', cmap='magma')
             ax.imshow(heatmap, aspect='auto', origin='lower', cmap='jet', alpha=0.5) 
@@ -219,42 +208,99 @@ def predict_wav(wav_path: str):
             buf.seek(0)
             heatmap_base64 = base64.b64encode(buf.read()).decode('utf-8')
             plt.close(fig)
-        # --- 6. CALCULATE REAL TECHNICAL INDICATORS FOR UI ---
-    window_size = 1000 
-    moving_avg = np.convolve(normalized, np.ones(window_size)/window_size, mode='same')
+            
+    # --- 6. COMPILE SUMMARY AND RETURN ---
+    total_windows = sum(class_counts.values())
     
-    try:
-        low_pass = butter_lowpass_filter(normalized, 2.0, fs=fs)
-    except Exception:
-        low_pass = np.zeros_like(normalized)
+    # Determine overall status based on smart thresholding (15% tolerance)
+    cut_count = class_counts[1]
+    dry_count = class_counts[2]
+    empty_count = class_counts[0]
+    total_windows = cut_count + dry_count + empty_count
 
-    # --- 7. COMPILE SUMMARY AND RETURN ---
-    stress_ratio = stressed_windows / total_windows if total_windows > 0 else 0
-    overall_status = "Stressed" if stress_ratio >= 0.5 else "Healthy"
+    if cut_count == 0 and dry_count == 0:
+        overall_status = "Normal (Background)"
+    elif cut_count > 0 and dry_count > 0:
+        # If the minor stress is at least 15% of the major stress, it's a true mix
+        if min(cut_count, dry_count) / max(cut_count, dry_count) >= 0.15:
+            overall_status = "Mixed Stress"
+        elif cut_count > dry_count:
+            overall_status = "Stress (Cut)"
+        else:
+            overall_status = "Stress (Dehydration)"
+    elif cut_count > 0:
+        overall_status = "Stress (Cut)"
+    elif dry_count > 0:
+        overall_status = "Stress (Dehydration)"
+    else:
+        overall_status = "Normal (Background)"
+
+    # Reduce downsample rate for UI graph payload
+    visual_downsample = 10 
+    visual_signal = raw_data[::visual_downsample]
+
+    # --- 1. CALCULATE SCIENTIFIC CHART METRICS ---
+    signal_array = np.array(visual_signal)
+    
+    # RMS Envelope: Calculates the energy power of the wave
+    window_size = max(1, len(signal_array) // 100)
+    squared_signal = np.square(signal_array)
+    rms_data = np.sqrt(np.convolve(squared_signal, np.ones(window_size)/window_size, mode='same'))
+    
+    # Adaptive Noise Floor: Calculates the ambient background static
+    ambient_threshold = float(np.median(rms_data) * 1.5)
+    noise_floor_data = np.full(len(signal_array), ambient_threshold)
+
+    # --- 2. GENERATE BASELINE HEATMAP ---
+    if overall_status == "Normal (Background)":
+        plt.figure(figsize=(10, 2))
+        # Use the downsampled sample rate for the visual spectrogram
+        plt.specgram(signal_array, Fs=SAMPLE_RATE/visual_downsample, cmap='viridis', NFFT=256, noverlap=128)
+        plt.axis('off')
+        plt.tight_layout(pad=0)
+        
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, transparent=True)
+        plt.close()
+        buf.seek(0)
+        heatmap_base64 = base64.b64encode(buf.read()).decode('utf-8')
 
     result = {
         "file": Path(wav_path).name,
-        "total_windows": total_windows,
-        "stressed_windows": stressed_windows,
-        "stress_ratio": round(stress_ratio, 4),
+        "total_audio_windows": total_windows,
+        "class_breakdown": {
+            "empty_pot_count": class_counts[0],
+            "tomato_cut_count": class_counts[1],
+            "tomato_dry_count": class_counts[2]
+        },
         "overall_status": overall_status,
         "detailed_predictions": predictions,
-        "signal_data": normalized[::100].tolist(),
-        "moving_average": moving_avg[::100].tolist(),
-        "low_pass_filter": low_pass[::100].tolist(),
+        "signal_data": visual_signal.tolist(),
+        "rms_data": rms_data.tolist(),                # New array
+        "noise_floor_data": noise_floor_data.tolist(),  # New array
         "xai_heatmap": heatmap_base64,
-        "worst_start_sec": worst_window_start_idx / fs,                 
-        "worst_end_sec": (worst_window_start_idx + TARGET_LENGTH) / fs
+        "worst_stress_event": {
+            "type": CLASS_MAP[worst_class_pred] if worst_window_tensor is not None else "None",
+            "start_sec": worst_window_start_idx / fs,                
+            "end_sec": (worst_window_start_idx + TARGET_LENGTH) / fs
+        }
     }
     
-    return result    
+    return result   
 
 if __name__ == "__main__":
-    sample_wav = "../data/raw/TAMC_PLANTAS_DERIVED_DATASET_ZENODO_v1_PIPELINE_READY_LIGHT/data/raw_plants/Solanum/BYB_Recording_2022-10-25_10.47.58.wav"
+    # Point this to a raw 500kHz WAV file to test
+    sample_wav = "../data/raw/bioacoustics/test_sample.wav"
     
     if Path(sample_wav).exists():
-        print("Running prediction pipeline...\n")
+        print("Running 3-Class Bioacoustic Pipeline...\n")
         output = predict_wav(sample_wav)
+        
+        # Strip out the heavy signal data and base64 string for clean terminal printing
+        output.pop("signal_data", None)
+        if output.get("xai_heatmap"):
+            output["xai_heatmap"] = "[BASE64_IMAGE_STRING_HIDDEN]"
+            
         print(json.dumps(output, indent=4))
     else:
-        print(f"Update the 'sample_wav' path at the bottom of the script to test a file.")
+        print(f"Please update the 'sample_wav' path at the bottom of the script to test a file.")
